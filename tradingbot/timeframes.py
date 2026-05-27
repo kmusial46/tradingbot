@@ -22,6 +22,8 @@ _AGG = {"open": "first", "high": "max", "low": "min", "close": "last", "volume":
 def normalize_frame(df: pd.DataFrame) -> pd.DataFrame:
     """Return a clean OHLCV frame: NY tz-aware sorted DatetimeIndex, float columns."""
     out = df.copy()
+    # case-insensitive columns so exported CSVs ("Time", "Open", "Volume", ...) work
+    out.columns = [str(c).strip().lower() for c in out.columns]
     if not isinstance(out.index, pd.DatetimeIndex):
         # try a 'ts'/'time'/'datetime' column
         for col in ("ts", "time", "datetime", "date"):
