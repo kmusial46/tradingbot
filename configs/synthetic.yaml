@@ -1,0 +1,11 @@
+# Demo config: run the whole strategy + backtester on built-in synthetic data,
+# no live feed required.  python -m tradingbot --config configs/synthetic.yaml backtest
+timeframes:
+  execution: "1min"          # the synthetic setups are scripted at 1-minute resolution
+strategy:
+  # Synthetic data trends, so every entry sits in "premium" of a trailing range;
+  # the premium/discount gate is validated by unit tests + real HTF data instead.
+  require_premium_discount: false
+provider:
+  type: "synthetic"
+  synthetic_days: 5

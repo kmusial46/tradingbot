@@ -1,0 +1,65 @@
+# TJR / ICT trading bot — full configuration reference.
+# Every value below is the built-in default; copy this file, edit, and pass it
+# with:  python -m tradingbot --config configs/your.yaml backtest
+
+risk:
+  account_size: 100000        # account equity used for position sizing
+  risk_pct: 1.0               # percent risked per trade (brief: 1-2%)
+  rr_target: 2.0              # primary mechanical reward:risk (brief: 1:2 / 1:3)
+  second_target_rr: 3.0       # optional runner target
+  move_be_at_r: 1.0           # move stop to breakeven once price reaches this R
+
+strategy:
+  swing_lookback: 2           # fractal half-width on the execution timeframe
+  htf_swing_lookback: 2       # fractal half-width on higher timeframes
+  dealing_range_lookback: 240
+  htf_dealing_range_lookback: 20   # HTF bars defining the premium/discount range
+  require_premium_discount: true   # Phase 3 filter (turn OFF for trending synthetic data)
+  eqh_eql_tolerance_pct: 0.03      # equal-high/low clustering tolerance
+  sweep_lookback: 60               # bars scanned for the swept pool
+  dol_max_distance_pct: 1.5        # ignore draw-on-liquidity pools farther than this
+  displacement_atr_mult: 1.5       # displacement body must exceed this * ATR
+  displacement_body_ratio: 0.55    # displacement body / range minimum
+  atr_period: 14
+  fvg_min_size_atr: 0.10           # minimum FVG size as a fraction of ATR
+  smt_swing_lookback: 2
+  mss_max_bars: 20                 # bars after a sweep to confirm the structure shift
+  require_macro: false             # also require a 9:50-10:10 / 10:50-11:10 macro window
+
+timeframes:
+  execution: "5min"           # entry timeframe: "1min" or "5min"
+  bias_tf: "1h"               # timeframe used for directional bias
+  dol_tf: "1h"                # timeframe used to mark draw-on-liquidity / premium-discount
+  htf: ["1h", "4h"]
+
+backtest:
+  window: 720                 # exec bars handed to the engine each step
+  warmup_bars: 60
+  pending_expiry_bars: 30     # cancel an unfilled limit after this many bars
+  one_trade_per_symbol: true
+
+# Only hunt in these killzones (empty list = all four).
+enabled_killzones: []
+
+instruments:
+  - symbol: NQ
+    tv_symbol: "CME_MINI:NQ1!"
+    smt_partner: ES
+  - symbol: ES
+    tv_symbol: "CME_MINI:ES1!"
+    smt_partner: NQ
+  - symbol: GOLD
+    tv_symbol: "COMEX:GC1!"
+    smt_partner: null
+
+provider:
+  type: "synthetic"           # synthetic | csv | tv_mcp
+  # csv provider
+  csv_dir: "data"
+  # tv_mcp provider — run locally alongside TradingView Desktop (debug port 9222).
+  mcp_command: "node"
+  mcp_args: ["/path/to/tradingview-mcp/src/server.js"]
+  mcp_bars_per_call: 100
+  # synthetic provider
+  synthetic_seed: 7
+  synthetic_days: 5

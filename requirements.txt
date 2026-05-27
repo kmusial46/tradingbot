@@ -1,0 +1,12 @@
+# Core runtime dependencies for the TJR/ICT trading bot
+pandas>=2.0
+numpy>=1.24
+PyYAML>=6.0
+python-dateutil>=2.8
+
+# Optional: only needed for the live TradingView-MCP data path (run locally).
+# Install with:  pip install "mcp>=1.0"
+# mcp>=1.0
+
+# Dev/test
+pytest>=7.4

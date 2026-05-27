@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+.env
+
+# Cached / generated market data (regenerate samples with `tradingbot gen-sample`)
+data/*.csv
+data/*.parquet
+data/samples/*.csv
+data/samples/*.parquet
+
+# Backtest output
+out/
+*.log
