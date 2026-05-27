@@ -100,11 +100,39 @@ def cmd_fetch(args) -> int:
     start = None
     if args.days:
         start = datetime.now(NY) - timedelta(days=args.days)
+    failures = 0
     for sym in symbols:
-        df = provider.get_history(sym, "1min", start=start)
+        try:
+            df = provider.get_history(sym, "1min", start=start)
+        except Exception as exc:
+            failures += 1
+            print(f"{sym}: FETCH FAILED — {exc}")
+            continue
+        if df.empty:
+            failures += 1
+            print(f"{sym}: 0 bars (nothing returned). Try `mcp-debug` to inspect the server.")
+            continue
         path = os.path.join(args.out, f"{sym}_1min.csv")
         _save_csv(df, path)
         print(f"{sym}: {len(df)} bars -> {path}")
+    return 1 if failures else 0
+
+
+def cmd_mcp_debug(args) -> int:
+    import json
+
+    cfg = _load_config(args)
+    cfg.provider.type = "tv_mcp"
+    provider = build_provider(cfg)
+    symbols = _symbols(args, cfg)
+    sym = symbols[0]
+    print(f"Probing TradingView MCP for {sym} ...\n")
+    try:
+        info = provider.diagnose(sym)
+    except Exception as exc:
+        print(f"mcp-debug failed: {exc}")
+        return 1
+    print(json.dumps(info, indent=2, default=str))
     return 0
 
 
@@ -190,6 +218,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     tl = sub.add_parser("tools", help="list tools exposed by the TradingView MCP server")
     tl.set_defaults(func=cmd_tools)
+
+    md = sub.add_parser("mcp-debug", help="dump raw TradingView MCP responses for one symbol")
+    common(md)
+    md.set_defaults(func=cmd_mcp_debug)
     return p
 
 

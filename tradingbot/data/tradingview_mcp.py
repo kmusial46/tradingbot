@@ -38,6 +38,15 @@ ARG_SYMBOL = "symbol"
 ARG_TIMEFRAME = "timeframe"
 ARG_DATE = "date"
 
+# Argument names vary across server versions; we try these in order until one
+# is accepted (set_symbol/set_timeframe) or returns bars (ohlcv).
+SYMBOL_ARG_VARIANTS = ("symbol", "ticker", "name", "value")
+TIMEFRAME_ARG_VARIANTS = ("timeframe", "interval", "resolution", "tf", "period", "value")
+OHLCV_ARG_VARIANTS = (
+    {"format": "full"}, {"format": "detailed"}, {"detailed": True},
+    {"count": 200}, {"bars": 200}, {"limit": 200}, {},
+)
+
 # canonical timeframe string -> TradingView timeframe token
 _TF_MAP = {
     "1min": "1", "1m": "1",
@@ -54,20 +63,29 @@ def _to_tv_timeframe(tf: str) -> str:
     return _TF_MAP.get(tf, tf)
 
 
+def _join_text(result: Any) -> str:
+    content = getattr(result, "content", None) or []
+    return "\n".join((getattr(i, "text", None) or "") for i in content).strip()
+
+
+def _result_info(result: Any) -> Dict[str, Any]:
+    """A JSON-serializable view of a tool result, for diagnostics."""
+    text = _join_text(result)
+    if len(text) > 1200:
+        text = text[:1200] + "...<truncated>"
+    return {
+        "isError": bool(getattr(result, "isError", False)),
+        "structured": getattr(result, "structuredContent", None),
+        "text": text,
+    }
+
+
 def _extract_payload(result: Any) -> Any:
     """Pull a JSON payload out of an MCP tool result (structured or text)."""
     structured = getattr(result, "structuredContent", None)
     if structured:
         return structured
-    content = getattr(result, "content", None)
-    if not content:
-        return None
-    texts = []
-    for item in content:
-        text = getattr(item, "text", None)
-        if text is not None:
-            texts.append(text)
-    blob = "\n".join(texts).strip()
+    blob = _join_text(result)
     if not blob:
         return None
     try:
@@ -192,34 +210,100 @@ class TradingViewMCPProvider(DataProvider):
                     info["health"] = _extract_payload(await session.call_tool(TOOL_HEALTH, {}))
                 return info
 
+    @staticmethod
+    async def _set_chart(session, tv_symbol: str, tv_tf: str) -> None:
+        for arg in SYMBOL_ARG_VARIANTS:
+            res = await session.call_tool(TOOL_SET_SYMBOL, {arg: tv_symbol})
+            if not getattr(res, "isError", False):
+                break
+        for arg in TIMEFRAME_ARG_VARIANTS:
+            res = await session.call_tool(TOOL_SET_TIMEFRAME, {arg: tv_tf})
+            if not getattr(res, "isError", False):
+                break
+
+    @staticmethod
+    async def _get_ohlcv(session):
+        """Call data_get_ohlcv with each arg variant until one yields bars."""
+        last = None
+        for args in OHLCV_ARG_VARIANTS:
+            res = await session.call_tool(TOOL_GET_OHLCV, args)
+            if getattr(res, "isError", False):
+                last = _join_text(res)
+                continue
+            bars = _parse_bars(_extract_payload(res))
+            if bars:
+                return bars
+            last = f"no bars from args={args}"
+        raise RuntimeError(last or "data_get_ohlcv returned nothing")
+
     async def _afetch(self, tv_symbol: str, tv_tf: str, start: Optional[datetime], max_pages: int) -> pd.DataFrame:
         ctx, ClientSession = self._session()
         async with ctx as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                await session.call_tool(TOOL_SET_SYMBOL, {ARG_SYMBOL: tv_symbol})
-                await session.call_tool(TOOL_SET_TIMEFRAME, {ARG_TIMEFRAME: tv_tf})
+                await self._set_chart(session, tv_symbol, tv_tf)
 
-                frames: List[pd.DataFrame] = []
-                earliest: Optional[pd.Timestamp] = None
-                for _ in range(max(1, max_pages)):
-                    payload = _extract_payload(await session.call_tool(TOOL_GET_OHLCV, {"format": "full"}))
-                    page = _bars_to_frame(_parse_bars(payload))
-                    if page.empty:
-                        break
-                    frames.append(page)
-                    page_earliest = page.index.min()
-                    if earliest is not None and page_earliest >= earliest:
-                        break  # no progress paging back
-                    earliest = page_earliest
+                try:
+                    first = await self._get_ohlcv(session)
+                except RuntimeError as exc:
+                    raise RuntimeError(
+                        f"data_get_ohlcv returned no parseable bars for {tv_symbol} @ {tv_tf} "
+                        f"({exc}). Run `python -m tradingbot --config <cfg> mcp-debug` to inspect "
+                        f"the raw response, then adjust the TOOL_*/ARG_* names at the top of "
+                        f"tradingbot/data/tradingview_mcp.py."
+                    ) from exc
+
+                frames = [_bars_to_frame(first)]
+                earliest = frames[0].index.min()
+                for _ in range(max(1, max_pages) - 1):
                     if start is None or earliest <= pd.Timestamp(start).tz_convert(NY):
                         break
-                    # page further back in history
-                    await session.call_tool(
-                        TOOL_SCROLL_TO_DATE, {ARG_DATE: earliest.date().isoformat()}
-                    )
+                    await session.call_tool(TOOL_SCROLL_TO_DATE, {ARG_DATE: earliest.date().isoformat()})
+                    try:
+                        page = _bars_to_frame(await self._get_ohlcv(session))
+                    except RuntimeError:
+                        break
+                    if page.empty or page.index.min() >= earliest:
+                        break  # no progress paging back
+                    frames.append(page)
+                    earliest = page.index.min()
 
-                if not frames:
-                    return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
                 out = pd.concat(frames)
                 return out[~out.index.duplicated(keep="last")].sort_index()
+
+    def diagnose(self, symbol: str) -> Dict[str, Any]:
+        return asyncio.run(self._aprobe(self._tv_symbol(symbol),
+                                        _to_tv_timeframe(self.config.timeframes.execution)))
+
+    async def _aprobe(self, tv_symbol: str, tv_tf: str) -> Dict[str, Any]:
+        """Dump raw tool responses so the data shape / arg names can be identified."""
+        ctx, ClientSession = self._session()
+        async with ctx as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                tools = await session.list_tools()
+                names = [t.name for t in tools.tools]
+                info: Dict[str, Any] = {"symbol": tv_symbol, "timeframe": tv_tf, "tools": names}
+
+                async def probe(tool, args):
+                    try:
+                        return _result_info(await session.call_tool(tool, args))
+                    except Exception as exc:
+                        return {"exception": repr(exc)}
+
+                info["set_symbol"] = {a: await probe(TOOL_SET_SYMBOL, {a: tv_symbol}) for a in SYMBOL_ARG_VARIANTS}
+                info["set_timeframe"] = {a: await probe(TOOL_SET_TIMEFRAME, {a: tv_tf}) for a in TIMEFRAME_ARG_VARIANTS}
+                for extra in ("chart_get_state", "quote_get"):
+                    if extra in names:
+                        info[extra] = await probe(extra, {})
+
+                info["ohlcv"] = {}
+                for args in OHLCV_ARG_VARIANTS:
+                    try:
+                        res = await session.call_tool(TOOL_GET_OHLCV, args)
+                        entry = _result_info(res)
+                        entry["parsed_bars"] = len(_parse_bars(_extract_payload(res)))
+                    except Exception as exc:
+                        entry = {"exception": repr(exc)}
+                    info["ohlcv"][json.dumps(args)] = entry
+                return info
