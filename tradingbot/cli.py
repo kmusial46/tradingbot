@@ -97,24 +97,33 @@ def cmd_fetch(args) -> int:
     provider = build_provider(cfg)
     symbols = _symbols(args, cfg)
     os.makedirs(args.out, exist_ok=True)
-    start = None
-    if args.days:
-        start = datetime.now(NY) - timedelta(days=args.days)
+    start = (datetime.now(NY) - timedelta(days=args.days)) if args.days else None
+
+    if getattr(args, "timeframes", None):
+        tfs = [t.strip() for t in args.timeframes.split(",")]
+    else:
+        tf = cfg.timeframes
+        tfs = []
+        for t in [tf.execution, tf.bias_tf, tf.dol_tf, *tf.htf]:
+            if t not in tfs:
+                tfs.append(t)
+
     failures = 0
     for sym in symbols:
-        try:
-            df = provider.get_history(sym, "1min", start=start)
-        except Exception as exc:
-            failures += 1
-            print(f"{sym}: FETCH FAILED — {exc}")
-            continue
-        if df.empty:
-            failures += 1
-            print(f"{sym}: 0 bars (nothing returned). Try `mcp-debug` to inspect the server.")
-            continue
-        path = os.path.join(args.out, f"{sym}_1min.csv")
-        _save_csv(df, path)
-        print(f"{sym}: {len(df)} bars -> {path}")
+        for t in tfs:
+            try:
+                df = provider.get_history(sym, t, start=start)
+            except Exception as exc:
+                failures += 1
+                print(f"{sym} {t}: FETCH FAILED — {exc}")
+                continue
+            if df.empty:
+                failures += 1
+                print(f"{sym} {t}: 0 bars (nothing returned). Try `mcp-debug` to inspect the server.")
+                continue
+            path = os.path.join(args.out, f"{sym}_{t}.csv")
+            _save_csv(df, path)
+            print(f"{sym} {t}: {len(df)} bars -> {path}")
     return 1 if failures else 0
 
 
@@ -208,6 +217,7 @@ def build_parser() -> argparse.ArgumentParser:
     common(fe)
     fe.add_argument("--out", default="data", help="output directory")
     fe.add_argument("--days", type=int, default=7, help="days of history to fetch")
+    fe.add_argument("--timeframes", help="comma-separated timeframes to fetch (default: from config)")
     fe.set_defaults(func=cmd_fetch)
 
     gs = sub.add_parser("gen-sample", help="generate synthetic sample CSVs")
